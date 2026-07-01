@@ -1,0 +1,45 @@
+# Static, manually-curated mapping of "the same" market across venues.
+# There is no cross-venue inference: each entry is hand-verified.
+#
+# For Polymarket, `market_id` is the CLOB conditionId and `yes_token`/`no_token`
+# are the ERC-1155 outcome token ids (from the CLOB markets API). For Kalshi,
+# `ticker` is the market ticker (from the Predictions markets API).
+#
+# `params` overrides the engine.defaults from exchanges.yaml on a per-market
+# basis. `close_time` (ISO-8601, UTC) is optional and, when present, feeds the
+# time-to-expiry risk filter.
+
+markets:
+  - id: "us_pres_2028_dem"
+    label: "US President 2028: Democrat wins"
+    category: "politics"
+    close_time: "2028-11-07T05:00:00Z"
+    polymarket:
+      market_id: "0x0000000000000000000000000000000000000000000000000000000000000000"
+      yes_token: "PM_PRES2028_DEM_YES"
+      no_token: "PM_PRES2028_DEM_NO"
+    kalshi:
+      ticker: "PRES-2028-DEM"
+      yes_side: "YES"
+      no_side: "NO"
+    params:
+      min_edge_cents: 3
+      min_liquidity: 100
+      max_notional_per_arb: 200.0
+
+  - id: "fed_cut_2026_jan"
+    label: "Fed cuts rates at Jan 2026 meeting"
+    category: "economics"
+    close_time: "2026-01-28T19:00:00Z"
+    polymarket:
+      market_id: "0x1111111111111111111111111111111111111111111111111111111111111111"
+      yes_token: "PM_FEDCUT_JAN26_YES"
+      no_token: "PM_FEDCUT_JAN26_NO"
+    kalshi:
+      ticker: "FED-26JAN-CUT"
+      yes_side: "YES"
+      no_side: "NO"
+    params:
+      min_edge_cents: 2
+      min_liquidity: 50
+      max_notional_per_arb: 150.0
