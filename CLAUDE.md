@@ -30,6 +30,14 @@ python -m arb_engine.cli run-bot --mock --iterations 3 --interval 0   # offline,
 python -m arb_engine.cli run-bot --iterations 1                        # live REST (needs network/proxy)
 python -m arb_engine.cli settle-trades --mock
 python -m arb_engine.cli export-pnl --format table   # table | csv | json
+
+# Automated cross-venue mapping (discover -> match -> review -> trade)
+python -m arb_engine.cli discover-markets --mock                       # cache both catalogs
+python -m arb_engine.cli sync-mappings --mock                          # match + tier into store
+python -m arb_engine.cli review-mappings                               # list the proposal queue
+python -m arb_engine.cli review-mappings --accept 1                    # (or --reject 1)
+python -m arb_engine.cli list-mappings --status active
+python -m arb_engine.cli run-bot --mock --dynamic-mappings --iterations 1  # trade active mappings
 ```
 
 There is **no configured linter/formatter or CI**. Keep style consistent with
@@ -63,8 +71,24 @@ settle-trades: resolve markets → book realized PnL            execution/settle
 | `arb_engine/execution/{simulator,settlement}.py` | Trade sim (+ per-level fills) and settlement PnL. |
 | `arb_engine/storage/db.py` | SQLAlchemy ORM (`markets`/`quotes`/`arbs`/`trades`/`fills`) + `Database` helper. |
 | `arb_engine/engine.py` | Async poll loop, `RiskState`, `build_clients()`. |
-| `arb_engine/cli.py` | Click commands: `run-bot`, `settle-trades`, `export-pnl`, `list-markets`. |
-| `config/{exchanges,markets}.yaml` | Connectivity/proxy/fees/engine settings, and the static cross-venue mapping. |
+| `arb_engine/mapping/` | Automated contract mapping: `discovery`, `blocking`, `scoring`, `adjudicator`, `store`, `sync`, `loader`. See below. |
+| `arb_engine/cli.py` | Click commands: `run-bot`, `settle-trades`, `export-pnl`, `list-markets`, `discover-markets`, `sync-mappings`, `review-mappings`, `list-mappings`. |
+| `config/{exchanges,markets}.yaml` | Connectivity/proxy/fees/engine/`mapping` settings, and the static cross-venue mapping (manual pins). |
+
+## Automated mapping (`arb_engine/mapping/`)
+
+The static `config/markets.yaml` is only *pins*; the pipeline discovers and
+maintains mappings for transient series. Flow:
+`discovery.list_markets()` (per client) → `blocking.generate_candidates` (category
+× close-date × keyword × strike) → `scoring.score_pair` (difflib fuzzy + Jaccard +
+date/category/strike + polarity heuristic) → `adjudicator.RuleAdjudicator.judge`
+(equivalence + guardrails) → `store.MappingStore` (tiers into
+`proposed|active|rejected`, retires dead legs) → `loader.resolve_markets` (merges
+DB `active` over YAML pins for the engine). `sync.sync_once` orchestrates one cycle
+(`sync-mappings` CLI). Tables: `venue_markets` (catalog cache), `market_mappings`
+(status + confidence + provenance). Adjudicator is a pluggable ABC — an embedding
+scorer / LLM adjudicator can slot in without touching callers (config toggles
+`mapping.use_embeddings` / `use_llm`, currently no-ops).
 
 ## Invariants & gotchas (read before editing core logic)
 
@@ -87,6 +111,11 @@ settle-trades: resolve markets → book realized PnL            execution/settle
 - **Settlement PnL is outcome-independent.** Because a trade holds YES+NO across
   venues, `realized_pnl = size − total_cost` regardless of who wins. Resolution
   endpoints are queried only to confirm the market actually settled.
+- **Polarity.** A Kalshi market can be *inverted* — its YES pays on the event's
+  NO. `MarketMapping.pm_yes_equals_kalshi_yes` records this; `event_side_book()`
+  (`core/models.py`) swaps the Kalshi book sides, and **both** the detector and
+  the simulator must go through it. Don't read `ka_book.yes/.no` directly for a
+  canonical event outcome.
 - **In-memory SQLite needs `StaticPool`** (already handled in `Database.__init__`)
   or each session gets a fresh empty DB. `all_trades()` eager-loads `fills`
   (`selectinload`) to avoid `DetachedInstanceError` after the session closes.

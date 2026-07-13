@@ -35,21 +35,29 @@ arb_engine/
 │   ├── fees.py               # Polymarket & Kalshi fee models + FeeEngine
 │   └── arbitrage.py          # ArbDetector: 2 directions × size optimization
 ├── exchanges/
-│   ├── base.py               # ExchangeClient ABC, MarketResolution, errors
-│   ├── polymarket_client.py  # CLOB REST /book + /markets (per-token books)
+│   ├── base.py               # ExchangeClient ABC (fetch_book/list_markets), errors
+│   ├── polymarket_client.py  # CLOB /book + Gamma /markets discovery (per-token books)
 │   ├── kalshi_client.py      # trade-api v2 /orderbook + /markets (bid->ask norm)
-│   └── mock_client.py        # in-memory books for offline demo + tests
+│   └── mock_client.py        # in-memory books + demo catalog for offline demo/tests
+├── mapping/                  # automated cross-venue contract mapping
+│   ├── discovery.py          # refresh + cache both venue catalogs
+│   ├── blocking.py           # candidate generation (category/date/keyword/strike)
+│   ├── scoring.py            # fuzzy + Jaccard + numeric features -> composite + polarity
+│   ├── adjudicator.py        # Adjudicator ABC + deterministic RuleAdjudicator
+│   ├── store.py              # tiering (proposed/active/rejected) + lifecycle
+│   ├── sync.py               # sync_once: one discover->match->store->retire cycle
+│   └── loader.py             # merge DB `active` mappings over YAML pins
 ├── execution/
 │   ├── simulator.py          # SimulatedTrade + per-leg fills (re-walks book)
 │   └── settlement.py         # resolve markets, book realized PnL
 ├── storage/
 │   └── db.py                 # SQLAlchemy models + Database helper (SQLite)
 ├── engine.py                 # async poll loop + risk state / gating
-└── cli.py                    # run-bot / settle-trades / export-pnl / list-markets
+└── cli.py                    # run-bot / settle-trades / export-pnl / discover / sync / review
 
 config/
-├── exchanges.yaml            # connectivity, proxy, fees, engine settings
-└── markets.yaml              # static cross-venue market mapping
+├── exchanges.yaml            # connectivity, proxy, fees, engine + mapping settings
+└── markets.yaml              # cross-venue market mapping (manual pins)
 ```
 
 ### Order-book normalization
@@ -63,6 +71,37 @@ when buying*. This lets the detector treat both venues identically.
 * **Kalshi** quotes integer **cents** and its book only exposes *resting bids*
   per side. A resting NO bid at `p`¢ is an offer to sell YES at `(100−p)`¢, so
   the client derives each outcome's `asks` from the opposite side's bids.
+
+**Polarity.** A Kalshi market may be *inverted* — its YES contract pays when the
+event resolves NO. `MarketMapping.pm_yes_equals_kalshi_yes` records this, and
+`event_side_book()` swaps the Kalshi book sides so the detector and simulator
+always consume the correct side per canonical event outcome.
+
+### Automated market mapping
+
+Event-contract series are transient, so beyond the hand-curated pins in
+`markets.yaml` the `mapping/` pipeline discovers and maintains mappings:
+
+```
+discover both catalogs → block candidate pairs → score similarity
+  → adjudicate (equivalence + polarity + guardrails) → tier & store → retire dead legs
+```
+
+* **Discovery** — `list_markets()` on each client (Polymarket Gamma API, Kalshi
+  `/markets`), normalized to `VenueMarket` and cached in `venue_markets`.
+* **Blocking** — cheap candidate generation by category, close-date bucket,
+  shared keywords, and numeric strike, to avoid an O(N×M) comparison.
+* **Scoring** — dependency-light `difflib` fuzzy + token Jaccard + close-time /
+  category / strike features → a composite score, plus a polarity hint.
+* **Adjudication** — `RuleAdjudicator` applies hard guardrails (strike exactness,
+  close-time tolerance) and thresholds the score. It's a pluggable ABC, so an
+  embedding scorer or LLM judge can slot in for the ambiguous middle band without
+  changing callers (config toggles `mapping.use_embeddings` / `use_llm`).
+* **Trust tiers** — high-confidence matches auto-activate (opt-in); the rest land
+  in a review queue (`review-mappings`); mappings retire when a leg settles or
+  delists. Nothing auto-activates past the close-time/strike guardrails.
+* **Consumption** — with `mapping.enabled`, the engine trades DB `active`
+  mappings merged over the YAML pins (pins always win).
 
 ## Installation
 
@@ -121,11 +160,20 @@ python -m arb_engine.cli settle-trades --mock    # demo: resolves everything
 # Report PnL (table | csv | json)
 python -m arb_engine.cli export-pnl
 python -m arb_engine.cli export-pnl --format csv --output pnl.csv
+
+# Automated mapping: discover -> match -> review -> trade
+python -m arb_engine.cli discover-markets --mock          # cache both catalogs
+python -m arb_engine.cli sync-mappings --mock             # match + tier into the store
+python -m arb_engine.cli review-mappings                  # inspect the proposal queue
+python -m arb_engine.cli review-mappings --accept 1       # activate (or --reject 1)
+python -m arb_engine.cli list-mappings --status active
+python -m arb_engine.cli run-bot --mock --dynamic-mappings --iterations 1
 ```
 
 `--db-url` overrides the SQLite database on any command; `--sample-quotes`
-persists top-of-book snapshots each cycle. Installing the package also exposes
-the `arb-engine` console script.
+persists top-of-book snapshots each cycle. `sync-mappings --auto-accept`
+auto-activates high-confidence matches. Installing the package also exposes the
+`arb-engine` console script.
 
 ### Example (mock) session
 
@@ -145,6 +193,9 @@ NO on Kalshi (~`$0.48`) for a locked ~`6.2`¢/contract net edge.
 * `arbs` — every detected opportunity (executed or not), with all components.
 * `trades` — simulated paper trades, both legs, and settlement fields.
 * `fills` — per-level fills backing each trade leg.
+* `venue_markets` — discovered catalog cache from each venue.
+* `market_mappings` — auto-discovered mappings with status, confidence, polarity,
+  and provenance (the feature scores + adjudication reason).
 
 ## Risk controls (enforced even in paper mode)
 
@@ -161,17 +212,22 @@ python -m pytest
 ```
 
 The suite covers fee formulas, order-book fills, arbitrage detection (both
-directions, size optimization, and every filter), client REST parsing (via
-`httpx.MockTransport`, including Kalshi bid→ask normalization and Polymarket
-geo-block handling), the end-to-end engine loop, and settlement PnL.
+directions, size optimization, every filter, and inverted polarity), client REST
+parsing (via `httpx.MockTransport`, including catalog discovery, Kalshi bid→ask
+normalization, and Polymarket geo-block handling), the mapping pipeline
+(blocking/scoring/adjudication, sync with retire, tiering + review + hybrid
+loader), the end-to-end engine loop, and settlement PnL.
 
 ## Scope / roadmap
 
 **In scope (implemented):** REST polling, normalized books, fee + slippage
 modeling, arb detection with size optimization, paper-trade simulation, SQLite
-storage, settlement, PnL export, proxy-aware clients.
+storage, settlement, PnL export, proxy-aware clients, and automated cross-venue
+contract mapping (discovery, matching, polarity, trust tiers, lifecycle).
 
-**Future:** WebSocket streaming for lower latency (AsyncAPI / CLOB WS), the
-official Polymarket Python SDK `ClobClient` for live order lifecycle, Kalshi
-RSA-PSS request signing for authenticated/live trading, and richer fee/resolution
-sourcing from each venue's SDK and on-chain data.
+**Future:** the optional embedding scorer and LLM adjudicator (the `Adjudicator`
+seam + `mapping.use_embeddings`/`use_llm` toggles are already in place), a
+scheduled sync loop/trigger, WebSocket streaming for lower latency (AsyncAPI /
+CLOB WS), the official Polymarket Python SDK `ClobClient` for live order
+lifecycle, Kalshi RSA-PSS request signing for authenticated/live trading, and
+richer fee/resolution sourcing from each venue's SDK and on-chain data.

@@ -29,6 +29,23 @@ engine:
     size_step: 1.0
     min_hours_to_expiry: 1.0
 
+# Automated cross-venue contract mapping (discovery -> match -> tier -> store).
+# Run `sync-mappings` to refresh; the engine trades `active` mappings (merged
+# over the YAML pins in markets.yaml) only when `enabled` is true.
+mapping:
+  enabled: false
+  # Auto-activate matches >= accept_threshold; otherwise queue for review.
+  auto_accept: false
+  accept_threshold: 0.80
+  # Adjudicator equivalence threshold + hard close-time guardrail.
+  min_confidence: 0.55
+  date_tolerance_hours: 48.0
+  # Blocking: min shared significant keywords to form a candidate pair.
+  min_shared_keywords: 1
+  # Heavier optional matchers (kept off to stay dependency-light / offline).
+  use_embeddings: false
+  use_llm: false
+
 exchanges:
   polymarket:
     # Central Limit Order Book (CLOB) REST host.

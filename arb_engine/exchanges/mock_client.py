@@ -48,6 +48,17 @@ class MockClient(ExchangeClient):
     async def fetch_book(self, mapping: MarketMapping) -> MarketBook:
         book = self._books.get(mapping.id)
         if book is None:
+            # Fall back to matching by venue id, so dynamically-loaded mappings
+            # (whose internal id differs) still resolve to the seeded book.
+            venue_id = (
+                mapping.polymarket.market_id
+                if self.exchange is Exchange.POLYMARKET
+                else mapping.kalshi.ticker
+            )
+            book = next(
+                (b for b in self._books.values() if b.venue_market_id == venue_id), None
+            )
+        if book is None:
             raise ExchangeError(
                 f"MockClient[{self.exchange.value}] has no book for {mapping.id!r}"
             )

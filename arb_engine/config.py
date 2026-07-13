@@ -80,6 +80,24 @@ class ExchangesConfig(_Base):
     kalshi: KalshiExchangeConfig = Field(default_factory=KalshiExchangeConfig)
 
 
+class MappingConfig(_Base):
+    """Settings for the automated cross-venue mapping pipeline."""
+
+    # When True, the engine trades DB `active` mappings (merged with YAML pins).
+    enabled: bool = False
+    # Auto-activate matches at/above accept_threshold; otherwise queue for review.
+    auto_accept: bool = False
+    accept_threshold: float = 0.80
+    # Adjudicator equivalence threshold + hard close-time guardrail.
+    min_confidence: float = 0.55
+    date_tolerance_hours: float = 48.0
+    # Blocking: minimum shared significant keywords to form a candidate pair.
+    min_shared_keywords: int = 1
+    # Optional heavier matchers (off by default to stay dependency-light/offline).
+    use_embeddings: bool = False
+    use_llm: bool = False
+
+
 class MarketParams(_Base):
     """Per-market risk / detection parameters (merged over engine defaults)."""
 
@@ -149,6 +167,7 @@ class AppConfig(_Base):
     engine: EngineSettings
     exchanges: ExchangesConfig
     markets: list[MarketMapping]
+    mapping: MappingConfig = Field(default_factory=MappingConfig)
 
     def resolved_params(self, mapping: MarketMapping) -> MarketParams:
         """Per-market params with engine defaults filled in."""
@@ -186,6 +205,9 @@ def load_config(
 
     engine = EngineSettings(**exch_raw.get("engine", {}))
     exchanges = ExchangesConfig(**exch_raw.get("exchanges", {}))
+    mapping = MappingConfig(**exch_raw.get("mapping", {}))
     markets_cfg = MarketsConfig(**markets_raw)
 
-    return AppConfig(engine=engine, exchanges=exchanges, markets=markets_cfg.markets)
+    return AppConfig(
+        engine=engine, exchanges=exchanges, markets=markets_cfg.markets, mapping=mapping
+    )

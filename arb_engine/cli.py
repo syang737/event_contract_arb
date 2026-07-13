@@ -21,6 +21,9 @@ from .core.models import Exchange
 from .engine import ArbEngine, build_clients
 from .exchanges.base import MarketResolution
 from .execution.settlement import settle_open_trades
+from .mapping.adjudicator import RuleAdjudicator
+from .mapping.loader import resolve_markets
+from .mapping.store import TieringPolicy
 from .mapping.sync import sync_once
 from .storage.db import Database, TradeRow
 
@@ -70,12 +73,19 @@ def cli() -> None:
 @click.option("--iterations", type=int, default=None, help="Stop after N poll cycles (default: run forever).")
 @click.option("--interval", type=float, default=None, help="Override poll interval (seconds).")
 @click.option("--sample-quotes", is_flag=True, help="Persist top-of-book snapshots each cycle.")
-def run_bot(exchanges_config, markets_config, db_url, log_level, mock, iterations, interval, sample_quotes):
+@click.option("--dynamic-mappings/--no-dynamic-mappings", default=None,
+              help="Trade DB `active` mappings merged with YAML pins (overrides config).")
+def run_bot(exchanges_config, markets_config, db_url, log_level, mock, iterations, interval,
+            sample_quotes, dynamic_mappings):
     """Poll books, detect arbs, and record simulated paper trades."""
     _setup_logging(log_level)
     config, db = _load(exchanges_config, markets_config, db_url)
     if interval is not None:
         config.engine.poll_interval_seconds = interval
+    if dynamic_mappings is not None:
+        config.mapping.enabled = dynamic_mappings
+    # Merge dynamic (DB active) mappings with YAML pins when enabled.
+    config.markets = resolve_markets(config, db)
 
     async def _main() -> None:
         pm, ka = build_clients(config, mock=mock)
@@ -231,20 +241,92 @@ def discover_markets(exchanges_config, markets_config, db_url, log_level, mock):
 @_db_opt
 @_loglevel_opt
 @click.option("--mock", is_flag=True, help="Use the in-memory demo catalog instead of live APIs.")
-def sync_mappings(exchanges_config, markets_config, db_url, log_level, mock):
-    """Discover + match markets across venues and store proposed mappings."""
+@click.option("--auto-accept", is_flag=True, default=None,
+              help="Auto-activate high-confidence matches (overrides config).")
+def sync_mappings(exchanges_config, markets_config, db_url, log_level, mock, auto_accept):
+    """Discover + match markets across venues; tier matches into the mapping store."""
     _setup_logging(log_level)
     config, db = _load(exchanges_config, markets_config, db_url)
+    mc = config.mapping
+    policy = TieringPolicy(
+        auto_accept=mc.auto_accept if auto_accept is None else auto_accept,
+        accept_threshold=mc.accept_threshold,
+    )
+    adjudicator = RuleAdjudicator(
+        min_confidence=mc.min_confidence, max_close_delta_hours=mc.date_tolerance_hours
+    )
 
     async def _main() -> None:
         pm, ka = build_clients(config, mock=mock)
         try:
-            report = await sync_once(db, pm, ka)
+            report = await sync_once(
+                db, pm, ka,
+                adjudicator=adjudicator,
+                policy=policy,
+                min_shared_keywords=mc.min_shared_keywords,
+                date_tolerance_hours=mc.date_tolerance_hours,
+            )
         finally:
             await asyncio.gather(pm.close(), ka.close(), return_exceptions=True)
         click.echo(str(report))
 
     asyncio.run(_main())
+
+
+# --------------------------------------------------------------------------- #
+@cli.command("list-mappings")
+@_exchanges_opt
+@_markets_opt
+@_db_opt
+@click.option("--status", default=None, help="Filter by status (proposed|active|retired|rejected).")
+def list_mappings(exchanges_config, markets_config, db_url, status):
+    """Print stored cross-venue mappings."""
+    _, db = _load(exchanges_config, markets_config, db_url)
+    rows = db.mappings(status)
+    if not rows:
+        click.echo("(no mappings)")
+        return
+    for m in rows:
+        polarity = "aligned" if m.pm_yes_equals_kalshi_yes else "INVERTED"
+        click.echo(
+            f"#{m.id:<4} [{m.status:<8}] conf={m.confidence:.2f} {polarity:<8} "
+            f"{m.pm_condition_id[:16]}… <-> {m.ka_ticker}\n"
+            f"      {m.label[:70]}\n      {m.reason}"
+        )
+
+
+# --------------------------------------------------------------------------- #
+@cli.command("review-mappings")
+@_exchanges_opt
+@_markets_opt
+@_db_opt
+@click.option("--accept", "accept_id", type=int, default=None, help="Activate mapping by id.")
+@click.option("--reject", "reject_id", type=int, default=None, help="Reject mapping by id.")
+def review_mappings(exchanges_config, markets_config, db_url, accept_id, reject_id):
+    """Review the proposal queue: accept/reject, or list what's pending."""
+    _, db = _load(exchanges_config, markets_config, db_url)
+
+    if accept_id is not None:
+        ok = db.set_mapping_status(accept_id, "active")
+        click.echo(f"mapping #{accept_id} -> active" if ok else f"mapping #{accept_id} not found")
+        return
+    if reject_id is not None:
+        ok = db.set_mapping_status(reject_id, "rejected")
+        click.echo(f"mapping #{reject_id} -> rejected" if ok else f"mapping #{reject_id} not found")
+        return
+
+    proposed = db.mappings("proposed")
+    if not proposed:
+        click.echo("review queue empty")
+        return
+    click.echo(f"{len(proposed)} mapping(s) awaiting review:")
+    for m in proposed:
+        polarity = "aligned" if m.pm_yes_equals_kalshi_yes else "INVERTED"
+        click.echo(
+            f"#{m.id:<4} conf={m.confidence:.2f} {polarity:<8} "
+            f"{m.pm_condition_id[:16]}… <-> {m.ka_ticker} — {m.label[:50]}"
+        )
+    click.echo("accept with:  review-mappings --accept <id>   reject with: --reject <id>")
 
 
 # --------------------------------------------------------------------------- #
