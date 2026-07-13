@@ -182,6 +182,36 @@ class VenueMarketRow(Base):
     fetched_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
 
 
+class MarketMappingRow(Base):
+    """A discovered cross-venue mapping with status + provenance."""
+
+    __tablename__ = "market_mappings"
+    __table_args__ = (
+        UniqueConstraint("pm_condition_id", "ka_ticker", name="uq_market_mapping"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    pm_condition_id: Mapped[str] = mapped_column(String, index=True)
+    pm_yes_token: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    pm_no_token: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    ka_ticker: Mapped[str] = mapped_column(String, index=True)
+    pm_yes_equals_kalshi_yes: Mapped[bool] = mapped_column(Boolean, default=True)
+
+    label: Mapped[str] = mapped_column(String, default="")
+    category: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    close_time: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+    status: Mapped[str] = mapped_column(String, default="proposed", index=True)
+    confidence: Mapped[float] = mapped_column(Float, default=0.0)
+    score_json: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    reason: Mapped[str] = mapped_column(String, default="")
+    method: Mapped[str] = mapped_column(String, default="rule")
+
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    retired_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+
 # --------------------------------------------------------------------------- #
 class Database:
     """Owns the SQLAlchemy engine and hands out sessions."""
@@ -342,6 +372,65 @@ class Database:
             if exchange is not None:
                 stmt = stmt.where(VenueMarketRow.exchange == exchange.value)
             return list(s.scalars(stmt))
+
+    def upsert_mapping(self, fields: dict) -> int:
+        """Insert-or-update a mapping keyed by (pm_condition_id, ka_ticker).
+
+        Preserves ``created_at`` on updates and stamps ``updated_at``. Returns id.
+        """
+        with self.session() as s:
+            row = s.scalar(
+                select(MarketMappingRow).where(
+                    MarketMappingRow.pm_condition_id == fields["pm_condition_id"],
+                    MarketMappingRow.ka_ticker == fields["ka_ticker"],
+                )
+            )
+            if row is None:
+                row = MarketMappingRow(
+                    pm_condition_id=fields["pm_condition_id"],
+                    ka_ticker=fields["ka_ticker"],
+                )
+                s.add(row)
+            for key, value in fields.items():
+                if key in ("pm_condition_id", "ka_ticker", "created_at"):
+                    continue
+                setattr(row, key, value)
+            row.updated_at = utcnow()
+            s.flush()
+            return row.id
+
+    def get_mapping(self, mapping_id: int) -> Optional[MarketMappingRow]:
+        with self.session() as s:
+            return s.get(MarketMappingRow, mapping_id)
+
+    def get_mapping_by_pair(
+        self, pm_condition_id: str, ka_ticker: str
+    ) -> Optional[MarketMappingRow]:
+        with self.session() as s:
+            return s.scalar(
+                select(MarketMappingRow).where(
+                    MarketMappingRow.pm_condition_id == pm_condition_id,
+                    MarketMappingRow.ka_ticker == ka_ticker,
+                )
+            )
+
+    def mappings(self, status: Optional[str] = None) -> list[MarketMappingRow]:
+        with self.session() as s:
+            stmt = select(MarketMappingRow)
+            if status is not None:
+                stmt = stmt.where(MarketMappingRow.status == status)
+            return list(s.scalars(stmt.order_by(MarketMappingRow.confidence.desc())))
+
+    def set_mapping_status(self, mapping_id: int, status: str) -> bool:
+        with self.session() as s:
+            row = s.get(MarketMappingRow, mapping_id)
+            if row is None:
+                return False
+            row.status = status
+            row.updated_at = utcnow()
+            if status == "retired":
+                row.retired_at = utcnow()
+            return True
 
     # -- reads ---------------------------------------------------------- #
     def open_trades(self) -> list[TradeRow]:

@@ -5,6 +5,7 @@ from .db import (
     Base,
     Database,
     FillRow,
+    MarketMappingRow,
     MarketRow,
     QuoteRow,
     TradeRow,
@@ -20,4 +21,5 @@ __all__ = [
     "TradeRow",
     "FillRow",
     "VenueMarketRow",
+    "MarketMappingRow",
 ]

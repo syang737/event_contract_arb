@@ -19,6 +19,7 @@ from ..core.models import (
     Exchange,
     MarketBook,
     Side,
+    event_side_book,
     utcnow,
 )
 from ..core.orderbook import walk_book
@@ -109,8 +110,10 @@ def simulate_trade(
     if yes_book is None or no_book is None:
         return None
 
-    yes_asks = yes_book.yes.asks
-    no_asks = no_book.no.asks
+    # Walk the canonical event-outcome books (swapped for inverted Kalshi polarity).
+    aligned = mapping.pm_yes_equals_kalshi_yes
+    yes_asks = event_side_book(yes_book, Side.YES, aligned).asks
+    no_asks = event_side_book(no_book, Side.NO, aligned).asks
 
     # First pass at the requested size to learn how much each leg can fill.
     yes_fills = walk_book(yes_asks, opp.size)

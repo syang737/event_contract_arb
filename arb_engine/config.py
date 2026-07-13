@@ -133,6 +133,9 @@ class MarketMapping(_Base):
     polymarket: PolymarketMarketRef
     kalshi: KalshiMarketRef
     params: Optional[MarketParams] = None
+    # False when Kalshi's YES contract pays on the event's NO (inverted polarity).
+    # The detector/simulator swap the Kalshi book sides accordingly.
+    pm_yes_equals_kalshi_yes: bool = True
 
 
 class MarketsConfig(_Base):

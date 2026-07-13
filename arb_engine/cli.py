@@ -21,6 +21,7 @@ from .core.models import Exchange
 from .engine import ArbEngine, build_clients
 from .exchanges.base import MarketResolution
 from .execution.settlement import settle_open_trades
+from .mapping.sync import sync_once
 from .storage.db import Database, TradeRow
 
 
@@ -219,6 +220,29 @@ def discover_markets(exchanges_config, markets_config, db_url, log_level, mock):
         n_pm = db.upsert_venue_markets(pm_markets)
         n_ka = db.upsert_venue_markets(ka_markets)
         click.echo(f"discovered polymarket={n_pm} kalshi={n_ka} (cached in venue_markets)")
+
+    asyncio.run(_main())
+
+
+# --------------------------------------------------------------------------- #
+@cli.command("sync-mappings")
+@_exchanges_opt
+@_markets_opt
+@_db_opt
+@_loglevel_opt
+@click.option("--mock", is_flag=True, help="Use the in-memory demo catalog instead of live APIs.")
+def sync_mappings(exchanges_config, markets_config, db_url, log_level, mock):
+    """Discover + match markets across venues and store proposed mappings."""
+    _setup_logging(log_level)
+    config, db = _load(exchanges_config, markets_config, db_url)
+
+    async def _main() -> None:
+        pm, ka = build_clients(config, mock=mock)
+        try:
+            report = await sync_once(db, pm, ka)
+        finally:
+            await asyncio.gather(pm.close(), ka.close(), return_exceptions=True)
+        click.echo(str(report))
 
     asyncio.run(_main())
 

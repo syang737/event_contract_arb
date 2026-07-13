@@ -28,6 +28,7 @@ from .models import (
     Exchange,
     MarketBook,
     Side,
+    event_side_book,
     utcnow,
 )
 from .orderbook import simulate_fill_from_book
@@ -76,8 +77,12 @@ class ArbDetector:
             return []
 
         opportunities: list[ArbOpportunity] = []
+        aligned = mapping.pm_yes_equals_kalshi_yes
+        # Kalshi books mapped to canonical event outcomes (swapped if inverted).
+        ka_event_yes = event_side_book(ka_book, Side.YES, aligned)
+        ka_event_no = event_side_book(ka_book, Side.NO, aligned)
 
-        # D1: buy YES on Polymarket, buy NO on Kalshi.
+        # D1: buy event-YES on Polymarket, buy event-NO on Kalshi.
         d1 = self._evaluate_direction(
             mapping,
             params,
@@ -86,19 +91,19 @@ class ArbDetector:
             yes_side=pm_book.yes,
             yes_venue_id=mapping.polymarket.yes_token,
             no_exchange=Exchange.KALSHI,
-            no_side=ka_book.no,
+            no_side=ka_event_no,
             no_venue_id=mapping.kalshi.ticker,
         )
         if d1 is not None:
             opportunities.append(d1)
 
-        # D2: buy YES on Kalshi, buy NO on Polymarket.
+        # D2: buy event-YES on Kalshi, buy event-NO on Polymarket.
         d2 = self._evaluate_direction(
             mapping,
             params,
             direction=Direction.YES_KA_NO_PM,
             yes_exchange=Exchange.KALSHI,
-            yes_side=ka_book.yes,
+            yes_side=ka_event_yes,
             yes_venue_id=mapping.kalshi.ticker,
             no_exchange=Exchange.POLYMARKET,
             no_side=pm_book.no,

@@ -107,6 +107,20 @@ class MarketBook:
         return self.yes if side is Side.YES else self.no
 
 
+def event_side_book(book: MarketBook, event_side: Side, aligned: bool) -> BookSide:
+    """Return the book for a *canonical event outcome*, honoring polarity.
+
+    "Event YES" is defined by Polymarket's YES (the mapping reference). Polymarket
+    is always aligned; a Kalshi market may be inverted (``aligned=False``), meaning
+    its YES contract pays when the event resolves NO — so event YES maps to the
+    Kalshi ``no`` book and vice-versa.
+    """
+    normal = book.exchange is Exchange.POLYMARKET or aligned
+    if normal:
+        return book.yes if event_side is Side.YES else book.no
+    return book.no if event_side is Side.YES else book.yes
+
+
 @dataclass
 class Quote:
     """Compact top-of-book snapshot for one outcome (persisted for sampling)."""

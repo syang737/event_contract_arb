@@ -85,6 +85,28 @@ def test_time_to_expiry_filter():
     assert ArbDetector(cfg).detect_market(m, pm, ka) == []
 
 
+def test_inverted_polarity_uses_swapped_kalshi_sides():
+    # Kalshi is inverted: its YES contract pays on the event's NO.
+    cfg = make_config(make_mapping(min_edge_cents=2.0, min_liquidity=10.0, aligned=False))
+    m = cfg.markets[0]
+    # Event-YES cheap on PM (0.44); event-NO cheap on Kalshi, which — inverted —
+    # lives on Kalshi's YES book (0.48). Kalshi's NO book (event-YES) is dear.
+    pm = _pm(m, yes_asks=[(0.44, 100)], no_asks=[(0.60, 100)])
+    ka = _ka(m, yes_asks=[(0.48, 100)], no_asks=[(0.62, 100)])
+
+    opps = ArbDetector(cfg).detect_market(m, pm, ka)
+    assert len(opps) == 1
+    opp = opps[0]
+    assert opp.direction is Direction.YES_PM_NO_KA
+    assert opp.leg_no.exchange is Exchange.KALSHI
+    # The NO leg must have consumed Kalshi's YES book (0.48), not its NO book (0.62).
+    assert abs(opp.leg_no.avg_price - 0.48) < 1e-9
+
+    # If we (wrongly) treated it as aligned, 0.44 + 0.62 = 1.06 -> no arb.
+    cfg_aligned = make_config(make_mapping(min_edge_cents=2.0, min_liquidity=10.0, aligned=True))
+    assert ArbDetector(cfg_aligned).detect_market(cfg_aligned.markets[0], pm, ka) == []
+
+
 def test_notional_cap_limits_size(mapping):
     # Cap arb notional at $50 so size can't grow to full depth.
     cfg = make_config(make_mapping(min_liquidity=10.0, max_notional_per_arb=50.0))

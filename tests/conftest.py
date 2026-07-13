@@ -27,6 +27,7 @@ def make_mapping(
     size_step: float = 1.0,
     category: str = "politics",
     close_time=None,
+    aligned: bool = True,
 ) -> MarketMapping:
     return MarketMapping(
         id=market_id,
@@ -45,6 +46,7 @@ def make_mapping(
             min_size=1.0,
             min_hours_to_expiry=0.0,
         ),
+        pm_yes_equals_kalshi_yes=aligned,
     )
 
 
