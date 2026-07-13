@@ -21,18 +21,30 @@ of scope for the paper-trading build; ``api_key_id`` is accepted but unused here
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 import httpx
 
 from ..config import KalshiExchangeConfig, MarketMapping
 from ..core.models import BookLevel, BookSide, Exchange, MarketBook, utcnow
+from ..mapping.models import VenueMarket
 from .base import (
     ExchangeClient,
     ExchangeError,
     MarketResolution,
     RateLimitedError,
 )
+
+
+def _parse_iso(value: Any) -> Optional[datetime]:
+    if not value or not isinstance(value, str):
+        return None
+    try:
+        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 # Kalshi statuses that indicate a terminal, settled market.
 _SETTLED_STATUSES = {"settled", "finalized", "determined", "closed"}
@@ -126,6 +138,61 @@ class KalshiClient(ExchangeClient):
             yes=yes_side,
             no=no_side,
             ts=utcnow(),
+        )
+
+    async def list_markets(
+        self, *, page_size: int = 1000, max_pages: int = 40, status: str = "open"
+    ) -> list[VenueMarket]:
+        """Discover markets via trade-api v2 ``/markets`` (cursor-paginated)."""
+        out: list[VenueMarket] = []
+        cursor: Optional[str] = None
+        for _ in range(max_pages):
+            params: dict[str, Any] = {"limit": page_size}
+            if status:
+                params["status"] = status
+            if cursor:
+                params["cursor"] = cursor
+            data = await self._get("/markets", params=params)
+            markets = data.get("markets", []) or []
+            for raw in markets:
+                vm = self._parse_market_meta(raw)
+                if vm is not None:
+                    out.append(vm)
+            cursor = data.get("cursor") or None
+            if not cursor or not markets:
+                break
+        return out
+
+    @staticmethod
+    def _parse_market_meta(raw: dict) -> Optional[VenueMarket]:
+        ticker = raw.get("ticker")
+        if not ticker:
+            return None
+        strike_type = raw.get("strike_type")
+        floor_strike = raw.get("floor_strike")
+        cap_strike = raw.get("cap_strike")
+        # Pick the bounding strike that defines the YES threshold.
+        strike = floor_strike if floor_strike is not None else cap_strike
+        strike_cap = cap_strike if strike_type == "between" else None
+
+        title = raw.get("title", "") or ""
+        subtitle = raw.get("subtitle") or raw.get("yes_sub_title") or ""
+        full_title = f"{title} {subtitle}".strip() if subtitle else title
+
+        return VenueMarket(
+            exchange=Exchange.KALSHI,
+            venue_id=str(ticker),
+            title=full_title,
+            description=raw.get("yes_sub_title", "") or raw.get("rules_primary", "") or "",
+            category=raw.get("category"),
+            close_time=_parse_iso(raw.get("close_time")),
+            status=str(raw.get("status", "active")),
+            strike_type=strike_type,
+            strike=float(strike) if isinstance(strike, (int, float)) else None,
+            strike_cap=float(strike_cap) if isinstance(strike_cap, (int, float)) else None,
+            event_key=raw.get("event_ticker"),
+            series_key=raw.get("series_ticker"),
+            raw=raw,
         )
 
     async def get_resolution(self, mapping: MarketMapping) -> MarketResolution:

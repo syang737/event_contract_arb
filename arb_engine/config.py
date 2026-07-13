@@ -51,6 +51,9 @@ class KalshiFeeConfig(_Base):
 
 class PolymarketExchangeConfig(_Base):
     base_url: str = "https://clob.polymarket.com"
+    # Gamma is Polymarket's metadata API, used for market discovery (richer than
+    # the CLOB /markets endpoint: question, description, tokens, endDate, ...).
+    gamma_base_url: str = "https://gamma-api.polymarket.com"
     ws_url: Optional[str] = None
     timeout_seconds: float = 10.0
     proxy: Optional[ProxyConfig] = None

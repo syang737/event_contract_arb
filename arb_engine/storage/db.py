@@ -22,6 +22,7 @@ from sqlalchemy import (
     ForeignKey,
     Integer,
     String,
+    UniqueConstraint,
     create_engine,
     select,
 )
@@ -41,6 +42,7 @@ from ..core.models import ArbOpportunity, Exchange, MarketBook, Quote, Side, utc
 
 if TYPE_CHECKING:
     from ..execution.simulator import SimulatedTrade
+    from ..mapping.models import VenueMarket
 
 
 class Base(DeclarativeBase):
@@ -154,6 +156,30 @@ class FillRow(Base):
     size: Mapped[float] = mapped_column(Float)
 
     trade: Mapped[TradeRow] = relationship(back_populates="fills")
+
+
+class VenueMarketRow(Base):
+    """Cached catalog entry from a venue's discovery endpoint."""
+
+    __tablename__ = "venue_markets"
+    __table_args__ = (UniqueConstraint("exchange", "venue_id", name="uq_venue_market"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    exchange: Mapped[str] = mapped_column(String, index=True)
+    venue_id: Mapped[str] = mapped_column(String, index=True)
+    title: Mapped[str] = mapped_column(String)
+    description: Mapped[str] = mapped_column(String, default="")
+    category: Mapped[Optional[str]] = mapped_column(String, nullable=True, index=True)
+    close_time: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    status: Mapped[str] = mapped_column(String, default="active", index=True)
+    yes_token: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    no_token: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    strike_type: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    strike: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    strike_cap: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    event_key: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    series_key: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    fetched_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
 
 
 # --------------------------------------------------------------------------- #
@@ -279,6 +305,43 @@ class Database:
             s.add(row)
             s.flush()
             return row.id
+
+    def upsert_venue_markets(self, markets: "list[VenueMarket]") -> int:
+        """Insert-or-update catalog rows keyed by (exchange, venue_id)."""
+        count = 0
+        with self.session() as s:
+            for vm in markets:
+                row = s.scalar(
+                    select(VenueMarketRow).where(
+                        VenueMarketRow.exchange == vm.exchange.value,
+                        VenueMarketRow.venue_id == vm.venue_id,
+                    )
+                )
+                if row is None:
+                    row = VenueMarketRow(exchange=vm.exchange.value, venue_id=vm.venue_id)
+                    s.add(row)
+                row.title = vm.title
+                row.description = vm.description
+                row.category = vm.category
+                row.close_time = vm.close_time
+                row.status = vm.status
+                row.yes_token = vm.yes_token
+                row.no_token = vm.no_token
+                row.strike_type = vm.strike_type
+                row.strike = vm.strike
+                row.strike_cap = vm.strike_cap
+                row.event_key = vm.event_key
+                row.series_key = vm.series_key
+                row.fetched_at = vm.fetched_at
+                count += 1
+        return count
+
+    def venue_markets(self, exchange: Optional[Exchange] = None) -> list[VenueMarketRow]:
+        with self.session() as s:
+            stmt = select(VenueMarketRow)
+            if exchange is not None:
+                stmt = stmt.where(VenueMarketRow.exchange == exchange.value)
+            return list(s.scalars(stmt))
 
     # -- reads ---------------------------------------------------------- #
     def open_trades(self) -> list[TradeRow]:

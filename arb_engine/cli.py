@@ -198,6 +198,32 @@ def _render(rows: list[dict], fmt: str, realized: float, expected_open: float) -
 
 
 # --------------------------------------------------------------------------- #
+@cli.command("discover-markets")
+@_exchanges_opt
+@_markets_opt
+@_db_opt
+@_loglevel_opt
+@click.option("--mock", is_flag=True, help="Use the in-memory demo catalog instead of live APIs.")
+def discover_markets(exchanges_config, markets_config, db_url, log_level, mock):
+    """Fetch both venues' market catalogs and cache them in `venue_markets`."""
+    _setup_logging(log_level)
+    config, db = _load(exchanges_config, markets_config, db_url)
+
+    async def _main() -> None:
+        pm, ka = build_clients(config, mock=mock)
+        try:
+            pm_markets = await pm.list_markets()
+            ka_markets = await ka.list_markets()
+        finally:
+            await asyncio.gather(pm.close(), ka.close(), return_exceptions=True)
+        n_pm = db.upsert_venue_markets(pm_markets)
+        n_ka = db.upsert_venue_markets(ka_markets)
+        click.echo(f"discovered polymarket={n_pm} kalshi={n_ka} (cached in venue_markets)")
+
+    asyncio.run(_main())
+
+
+# --------------------------------------------------------------------------- #
 @cli.command("list-markets")
 @_exchanges_opt
 @_markets_opt

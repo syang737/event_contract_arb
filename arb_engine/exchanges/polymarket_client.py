@@ -14,12 +14,15 @@ assemble a normalized :class:`MarketBook`. Geo-block (HTTP 403) and rate-limit
 from __future__ import annotations
 
 import asyncio
+import json
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 import httpx
 
 from ..config import MarketMapping, PolymarketExchangeConfig
 from ..core.models import BookLevel, BookSide, Exchange, MarketBook, utcnow
+from ..mapping.models import VenueMarket
 from .base import (
     ExchangeClient,
     ExchangeError,
@@ -27,6 +30,29 @@ from .base import (
     MarketResolution,
     RateLimitedError,
 )
+
+
+def _parse_iso(value: Any) -> Optional[datetime]:
+    if not value or not isinstance(value, str):
+        return None
+    try:
+        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+def _json_list(value: Any) -> list:
+    """Gamma encodes some array fields as JSON strings; decode either shape."""
+    if isinstance(value, list):
+        return value
+    if isinstance(value, str) and value:
+        try:
+            decoded = json.loads(value)
+            return decoded if isinstance(decoded, list) else []
+        except json.JSONDecodeError:
+            return []
+    return []
 
 
 class PolymarketClient(ExchangeClient):
@@ -107,6 +133,77 @@ class PolymarketClient(ExchangeClient):
             yes=yes_side,
             no=no_side,
             ts=utcnow(),
+        )
+
+    async def list_markets(
+        self, *, page_size: int = 250, max_pages: int = 40, include_closed: bool = False
+    ) -> list[VenueMarket]:
+        """Discover markets via the Gamma metadata API (paginated by offset)."""
+        gamma = self.config.gamma_base_url.rstrip("/")
+        out: list[VenueMarket] = []
+        offset = 0
+        for _ in range(max_pages):
+            params = {"limit": page_size, "offset": offset, "order": "id", "ascending": "true"}
+            if not include_closed:
+                params["closed"] = "false"
+            data = await self._get(f"{gamma}/markets", params=params)
+            batch = data if isinstance(data, list) else data.get("data", [])
+            if not batch:
+                break
+            for raw in batch:
+                vm = self._parse_gamma_market(raw)
+                if vm is not None:
+                    out.append(vm)
+            if len(batch) < page_size:
+                break
+            offset += page_size
+        return out
+
+    @staticmethod
+    def _parse_gamma_market(raw: dict) -> Optional[VenueMarket]:
+        condition_id = raw.get("conditionId") or raw.get("condition_id")
+        if not condition_id:
+            return None
+        outcomes = [str(o).strip().lower() for o in _json_list(raw.get("outcomes"))]
+        tokens = [str(t) for t in _json_list(raw.get("clobTokenIds"))]
+        yes_token = no_token = None
+        for idx, outcome in enumerate(outcomes):
+            if idx >= len(tokens):
+                break
+            if outcome in ("yes", "y"):
+                yes_token = tokens[idx]
+            elif outcome in ("no", "n"):
+                no_token = tokens[idx]
+        if yes_token is None and len(tokens) == 2:
+            # Non-binary phrasing; assume [YES, NO] ordering as a fallback.
+            yes_token, no_token = tokens[0], tokens[1]
+
+        if raw.get("closed"):
+            status = "closed"
+        elif raw.get("active", True) is False:
+            status = "inactive"
+        else:
+            status = "active"
+
+        category = raw.get("category")
+        if category is None:
+            events = raw.get("events") or []
+            if events and isinstance(events[0], dict):
+                category = events[0].get("category")
+
+        return VenueMarket(
+            exchange=Exchange.POLYMARKET,
+            venue_id=str(condition_id),
+            title=raw.get("question", "") or raw.get("title", "") or "",
+            description=raw.get("description", "") or "",
+            category=category,
+            close_time=_parse_iso(raw.get("endDate") or raw.get("end_date")),
+            status=status,
+            yes_token=yes_token,
+            no_token=no_token,
+            strike_type="binary",
+            event_key=raw.get("slug"),
+            raw=raw,
         )
 
     async def get_resolution(self, mapping: MarketMapping) -> MarketResolution:

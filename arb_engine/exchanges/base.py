@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import abc
 from dataclasses import dataclass
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from ..config import MarketMapping
 from ..core.models import Exchange, MarketBook
+
+if TYPE_CHECKING:
+    from ..mapping.models import VenueMarket
 
 
 class ExchangeError(RuntimeError):
@@ -58,6 +61,13 @@ class ExchangeClient(abc.ABC):
     @abc.abstractmethod
     async def get_resolution(self, mapping: MarketMapping) -> MarketResolution:
         """Return whether the market has settled and which side won."""
+
+    @abc.abstractmethod
+    async def list_markets(self, **kwargs) -> "list[VenueMarket]":
+        """Discover the venue's current markets as normalized ``VenueMarket``s.
+
+        Used by the mapping pipeline to build/refresh the cross-venue mapping.
+        """
 
     async def close(self) -> None:  # pragma: no cover - trivial default
         """Release any underlying transport resources."""

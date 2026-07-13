@@ -8,6 +8,7 @@ from .db import (
     MarketRow,
     QuoteRow,
     TradeRow,
+    VenueMarketRow,
 )
 
 __all__ = [
@@ -18,4 +19,5 @@ __all__ = [
     "ArbRow",
     "TradeRow",
     "FillRow",
+    "VenueMarketRow",
 ]
