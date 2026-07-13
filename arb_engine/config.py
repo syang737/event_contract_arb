@@ -93,6 +93,8 @@ class MappingConfig(_Base):
     date_tolerance_hours: float = 48.0
     # Blocking: minimum shared significant keywords to form a candidate pair.
     min_shared_keywords: int = 1
+    # Only match markets that still exist (open, not settled, not past close time).
+    exclude_expired: bool = True
     # Optional heavier matchers (off by default to stay dependency-light/offline).
     use_embeddings: bool = False
     use_llm: bool = False

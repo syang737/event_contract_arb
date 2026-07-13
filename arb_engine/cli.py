@@ -265,6 +265,7 @@ def sync_mappings(exchanges_config, markets_config, db_url, log_level, mock, aut
                 policy=policy,
                 min_shared_keywords=mc.min_shared_keywords,
                 date_tolerance_hours=mc.date_tolerance_hours,
+                exclude_expired=mc.exclude_expired,
             )
         finally:
             await asyncio.gather(pm.close(), ka.close(), return_exceptions=True)

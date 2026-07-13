@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from ..core.models import Exchange, utcnow
@@ -48,6 +48,19 @@ class VenueMarket:
     def is_terminal(self) -> bool:
         return self.status.lower() in _TERMINAL_STATUSES
 
+    def is_expired(self, now: Optional[datetime] = None) -> bool:
+        """True if the market's close time has already passed."""
+        if self.close_time is None:
+            return False
+        close = self.close_time
+        if close.tzinfo is None:
+            close = close.replace(tzinfo=timezone.utc)
+        return close <= (now or datetime.now(timezone.utc))
+
+    def is_tradable(self, now: Optional[datetime] = None) -> bool:
+        """Open, not terminal, and not past its close time."""
+        return self.is_open and not self.is_terminal and not self.is_expired(now)
+
 
 @dataclass
 class MappingVerdict:
@@ -58,3 +71,6 @@ class MappingVerdict:
     confidence: float = 0.0
     reason: str = ""
     method: str = "rule"
+    # Machine-readable classification for diagnostics/aggregation, e.g.
+    # "ok" | "below_threshold" | "strike_mismatch" | "close_time".
+    reason_code: str = ""

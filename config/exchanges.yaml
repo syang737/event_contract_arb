@@ -42,6 +42,8 @@ mapping:
   date_tolerance_hours: 48.0
   # Blocking: min shared significant keywords to form a candidate pair.
   min_shared_keywords: 1
+  # Only match markets that still exist (open, not settled, not past close time).
+  exclude_expired: true
   # Heavier optional matchers (kept off to stay dependency-light / offline).
   use_embeddings: false
   use_llm: false

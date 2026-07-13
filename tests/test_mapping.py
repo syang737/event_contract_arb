@@ -138,6 +138,50 @@ async def test_sync_proposes_and_records_polarity():
     assert by_pair[("0xDEM32", "PRES-2032-REP")].pm_yes_equals_kalshi_yes is False
 
 
+def test_venue_market_expiry_and_tradable():
+    live = _pm("0xLIVE", "x", close_time=_dt(2099, 1, 1))
+    dead = _pm("0xDEAD", "x", close_time=_dt(2000, 1, 1))
+    assert not live.is_expired() and live.is_tradable()
+    assert dead.is_expired() and not dead.is_tradable()
+    # A terminal status is never tradable regardless of close time.
+    settled = _pm("0xSET", "x", close_time=_dt(2099, 1, 1), status="settled")
+    assert not settled.is_tradable()
+
+
+async def test_sync_excludes_expired_markets():
+    db = Database("sqlite:///:memory:")
+    # Same subject on both venues but already past its close time -> not matched.
+    pm_dead = _pm("0xOLD", "Will a Democrat win the 2020 election?", category="politics",
+                  close_time=_dt(2020, 11, 3))
+    ka_dead = _ka("PRES-2020", "2020 presidential election Democratic winner",
+                  category="politics", close_time=_dt(2020, 11, 3))
+    pm = MockClient(Exchange.POLYMARKET, catalog=[pm_dead])
+    ka = MockClient(Exchange.KALSHI, catalog=[ka_dead])
+
+    report = await sync_once(db, pm, ka, exclude_expired=True)
+    assert report.pm_tradable == 0 and report.ka_tradable == 0
+    assert report.candidates == 0
+    # Turning the filter off lets the expired pair through as a candidate.
+    report2 = await sync_once(db, pm, ka, exclude_expired=False)
+    assert report2.candidates == 1
+
+
+async def test_sync_reports_reject_reasons_and_near_misses():
+    db = Database("sqlite:///:memory:")
+    # Differently-worded but related -> scores below the strict threshold.
+    pm = MockClient(Exchange.POLYMARKET, catalog=[
+        _pm("0xTRUMP", "Will Donald Trump win the 2028 election?", category="politics",
+            close_time=_dt(2028, 11, 7))])
+    ka = MockClient(Exchange.KALSHI, catalog=[
+        _ka("PRES-28", "2028 presidential election Trump victory", category="politics",
+            close_time=_dt(2028, 11, 7))])
+
+    report = await sync_once(db, pm, ka, adjudicator=RuleAdjudicator(min_confidence=0.9))
+    assert report.status_counts.get("rejected") == 1
+    assert report.reject_reasons.get("below_threshold") == 1
+    assert report.near_misses and report.near_misses[0][1].startswith("composite=")
+
+
 async def test_sync_retires_when_leg_delists():
     db = Database("sqlite:///:memory:")
     pm = MockClient(Exchange.POLYMARKET, catalog=[PM_DEM])

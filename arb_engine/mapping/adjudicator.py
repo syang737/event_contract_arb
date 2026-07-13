@@ -43,8 +43,9 @@ class RuleAdjudicator(Adjudicator):
                 equivalent=False,
                 pm_yes_equals_kalshi_yes=polarity,
                 confidence=features.composite,
-                reason="strike mismatch",
+                reason=f"strike mismatch (composite={features.composite:.2f})",
                 method="rule",
+                reason_code="strike_mismatch",
             )
         if (
             features.close_delta_hours is not None
@@ -56,6 +57,7 @@ class RuleAdjudicator(Adjudicator):
                 confidence=features.composite,
                 reason=f"close times differ by {features.close_delta_hours:.0f}h",
                 method="rule",
+                reason_code="close_time",
             )
 
         equivalent = features.composite >= self.min_confidence
@@ -63,7 +65,7 @@ class RuleAdjudicator(Adjudicator):
             f"composite={features.composite:.2f} fuzzy={features.fuzzy_title:.2f} "
             f"jaccard={features.token_jaccard:.2f}"
             + ("" if polarity else " [inverted polarity]")
-            + ("" if equivalent else " < threshold")
+            + ("" if equivalent else f" < min_confidence={self.min_confidence:.2f}")
         )
         return MappingVerdict(
             equivalent=equivalent,
@@ -71,4 +73,5 @@ class RuleAdjudicator(Adjudicator):
             confidence=features.composite,
             reason=reason,
             method="rule",
+            reason_code="ok" if equivalent else "below_threshold",
         )

@@ -88,7 +88,9 @@ discover both catalogs → block candidate pairs → score similarity
 ```
 
 * **Discovery** — `list_markets()` on each client (Polymarket Gamma API, Kalshi
-  `/markets`), normalized to `VenueMarket` and cached in `venue_markets`.
+  `/markets`), normalized to `VenueMarket` and cached in `venue_markets`. Only
+  *tradable* markets are matched — open, not settled, and not past their close
+  time (`mapping.exclude_expired`, on by default).
 * **Blocking** — cheap candidate generation by category, close-date bucket,
   shared keywords, and numeric strike, to avoid an O(N×M) comparison.
 * **Scoring** — dependency-light `difflib` fuzzy + token Jaccard + close-time /
