@@ -1,0 +1,88 @@
+# Exchange connectivity, network/proxy, and fee-model configuration.
+#
+# Polymarket geo-blocks US IPs, so its traffic supports an optional proxy.
+# Kalshi can go direct or through a separate proxy. Each client accepts an
+# httpx.AsyncClient configured from these settings, so higher-level code stays
+# transport-agnostic.
+
+engine:
+  poll_interval_seconds: 5.0
+  # Extra edge (in $/contract) shaved off every opportunity to absorb slippage,
+  # rounding, and modeling error before an arb is considered actionable.
+  safety_buffer: 0.005
+  # Books older than this (seconds) are treated as stale and skipped.
+  staleness_seconds: 10.0
+  # Hypothetical capital ceiling across all open paper positions (USD notional).
+  max_total_notional: 5000.0
+  # Per-exchange notional ceiling (USD).
+  max_notional_per_exchange: 3000.0
+  # Cap on simultaneously OPEN paper trades per mapped market.
+  max_open_trades_per_market: 1
+  # SQLite database (SQLAlchemy URL). Overridable via --db-url on the CLI.
+  db_url: "sqlite:///data/arb.db"
+  # Default per-market risk params; overridable per market in markets.yaml.
+  defaults:
+    min_edge_cents: 2
+    min_liquidity: 50
+    max_notional_per_arb: 200.0
+    min_size: 1.0
+    size_step: 1.0
+    min_hours_to_expiry: 1.0
+
+# Automated cross-venue contract mapping (discovery -> match -> tier -> store).
+# Run `sync-mappings` to refresh; the engine trades `active` mappings (merged
+# over the YAML pins in markets.yaml) only when `enabled` is true.
+mapping:
+  enabled: false
+  # Auto-activate matches >= accept_threshold; otherwise queue for review.
+  auto_accept: false
+  accept_threshold: 0.80
+  # Adjudicator equivalence threshold + hard close-time guardrail.
+  min_confidence: 0.55
+  date_tolerance_hours: 48.0
+  # Blocking: min shared significant keywords to form a candidate pair.
+  min_shared_keywords: 1
+  # Only match markets that still exist (open, not settled, not past close time).
+  exclude_expired: true
+  # Heavier optional matchers (kept off to stay dependency-light / offline).
+  use_embeddings: false
+  use_llm: false
+
+exchanges:
+  polymarket:
+    # Central Limit Order Book (CLOB) REST host.
+    base_url: "https://clob.polymarket.com"
+    ws_url: "wss://ws-subscriptions-clob.polymarket.com/ws/market"
+    timeout_seconds: 10.0
+    # Optional outbound proxy for geo-blocked regions. Set to null to go direct.
+    proxy: null
+    # proxy:
+    #   type: "socks5"          # socks5 | http | https
+    #   url: "socks5://user:pass@host:1080"
+    fees:
+      # Symmetric-around-50% taker model: fee = base_rate * min(p, 1-p) * size.
+      # Polymarket historically charged 0; override per category as fees roll out.
+      base_rate: 0.0
+      category_rates: {}
+      # category_rates:
+      #   politics: 0.02
+      #   sports: 0.02
+
+  kalshi:
+    # Kalshi Predictions / event-contract REST host (trade-api v2).
+    base_url: "https://api.elections.kalshi.com/trade-api/v2"
+    ws_url: "wss://api.elections.kalshi.com/trade-api/ws/v2"
+    # "prod" or "demo". Demo swaps the host to demo-api.kalshi.co.
+    env: "prod"
+    demo_base_url: "https://demo-api.kalshi.co/trade-api/v2"
+    timeout_seconds: 10.0
+    proxy: null
+    # Optional; read-only market data is public on prod. Signed order placement
+    # (RSA-PSS) is out of scope for the paper-trading build.
+    api_key_id: null
+    fees:
+      # Kalshi general trading fee: ceil(rate * C * P * (1-P)) rounded up to $0.01.
+      fee_rate: 0.07
+      per_market_rates: {}
+      # per_market_rates:
+      #   "SP500": 0.035

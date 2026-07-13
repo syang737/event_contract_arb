@@ -1,0 +1,11 @@
+# Runtime dependencies for the Polymarket <> Kalshi paper-trading arb engine.
+pydantic>=2.6
+httpx[socks]>=0.27
+PyYAML>=6.0
+SQLAlchemy>=2.0
+click>=8.1
+
+# Test dependencies (installed alongside for convenience).
+pytest>=8.0
+pytest-asyncio>=0.23
+anyio>=4.0
